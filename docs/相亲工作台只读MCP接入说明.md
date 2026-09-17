@@ -16,6 +16,7 @@ scripts/mcp/matchmaking_readonly_mcp.py
 - 文案任务、草稿、审稿结果和研究来源
 - 内容雷达已经保存的热点、竞品、平台、链接和可见互动数据
 - 已保存的小红书正文提取状态（需要 `include_body=true` 才返回正文）
+- 已严格归档的小红书原始正文、图片顺序、字节大小、哈希和完整性状态（需要 `include_body=true` 才返回正文）
 - 发布后的阅读、互动、咨询、成交和收入指标
 - 生活案例的标题、时间和图片数量（需要 `include_content=true` 才返回案例正文）
 - 资料库全文片段和对应来源
@@ -30,9 +31,12 @@ get_task_result
 search_knowledge
 list_radar_items
 list_social_extractions
+list_verified_xhs_archives
 list_performance
 list_life_cases
 ```
+
+`list_social_extractions` 用于查看旧页面提取和 OCR/字幕辅助证据；需要做事实分析时，优先调用 `list_verified_xhs_archives`。后者只返回 V2 归档表中已经保存的正文与媒体证据，并明确区分 `COMPLETE`、`PARTIAL` 和验证状态，不返回图片文件路径、浏览器登录态或带签名地址。
 
 不提供任意 SQL、写入、删除、发布、登录、上传或账号修改工具。
 

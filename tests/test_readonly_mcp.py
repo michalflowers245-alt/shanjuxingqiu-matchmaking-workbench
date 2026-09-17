@@ -26,6 +26,17 @@ def make_db(path: Path) -> None:
             CREATE TABLE copy_tasks (id TEXT,workspace_id TEXT,content_type TEXT,platform TEXT,topic TEXT,goal TEXT,offer TEXT,status TEXT,stage TEXT,revision_round INTEGER,retry_count INTEGER,last_error TEXT,source_case_id TEXT,created_at TEXT,updated_at TEXT);
             CREATE TABLE topic_monitor_items (id TEXT,workspace_id TEXT);
             CREATE TABLE xhs_post_extractions (id TEXT,workspace_id TEXT);
+            CREATE TABLE xhs_archive_versions (
+              id TEXT,workspace_id TEXT,extraction_id TEXT,post_id TEXT,observed_post_id TEXT,
+              body_raw TEXT,body_normalized TEXT,body_source TEXT,archive_status TEXT,
+              verification_status TEXT,content_sha256 TEXT,manifest_sha256 TEXT,captured_at TEXT,
+              collector_version TEXT
+            );
+            CREATE TABLE xhs_post_assets (
+              id TEXT,workspace_id TEXT,archive_id TEXT,role TEXT,ordinal INTEGER,mime_detected TEXT,
+              extension TEXT,width INTEGER,height INTEGER,duration_ms INTEGER,byte_size INTEGER,
+              sha256 TEXT,status TEXT,error_code TEXT
+            );
             CREATE TABLE life_cases (id TEXT,workspace_id TEXT);
             CREATE TABLE performance_records (id TEXT,workspace_id TEXT);
             CREATE TABLE draft_versions (id TEXT,task_id TEXT,workspace_id TEXT,version INTEGER,origin TEXT,body_text TEXT,is_final INTEGER,created_at TEXT);
@@ -36,6 +47,14 @@ def make_db(path: Path) -> None:
         db.execute("INSERT INTO workspaces VALUES ('ws1','相亲工作区','测试','pink','now','now')")
         db.execute("INSERT INTO brand_profiles VALUES ('ws1','{\"name\":\"柚子皮\",\"api_key\":\"secret\"}','[]','now')")
         db.execute("INSERT INTO copy_tasks VALUES ('task1','ws1','xiaohongshu','小红书','长沙相亲','获客','','FINAL_READY','FINAL',0,0,'',NULL,'now','now')")
+        db.execute("ALTER TABLE xhs_post_extractions ADD COLUMN url TEXT")
+        db.execute("ALTER TABLE xhs_post_extractions ADD COLUMN title TEXT")
+        db.execute("ALTER TABLE xhs_post_extractions ADD COLUMN author TEXT")
+        db.execute("ALTER TABLE xhs_post_extractions ADD COLUMN expected_asset_count INTEGER")
+        db.execute("ALTER TABLE xhs_post_extractions ADD COLUMN saved_asset_count INTEGER")
+        db.execute("INSERT INTO xhs_post_extractions VALUES ('x1','ws1','https://www.xiaohongshu.com/explore/p1','原帖','作者',2,2)")
+        db.execute("INSERT INTO xhs_archive_versions VALUES ('a1','ws1','x1','p1','p1','第一行\n第二行','第一行\n第二行','embedded_state','COMPLETE','VERIFIED','bodyhash','manifesthash','now','v2.1')")
+        db.execute("INSERT INTO xhs_post_assets VALUES ('img1','ws1','a1','carousel',1,'image/webp','webp',1080,1440,NULL,12345,'imagehash','SAVED',NULL)")
         db.commit()
 
 
@@ -80,3 +99,18 @@ def test_stdio_protocol_lists_tools(tmp_path: Path):
     names = {tool["name"] for tool in messages[1]["result"]["tools"]}
     assert "search_knowledge" in names
     assert "get_task_result" in names
+    assert "list_verified_xhs_archives" in names
+
+
+def test_verified_archive_tool_returns_body_and_asset_evidence(tmp_path: Path):
+    path = tmp_path / "copy.sqlite3"
+    make_db(path)
+    store = mcp.ReadOnlyStore(path, tmp_path / "audit.log")
+
+    result = store.call("list_verified_xhs_archives", {"workspace_id": "ws1", "include_body": True})
+
+    assert result["supported"] is True
+    assert result["items"][0]["post_id"] == result["items"][0]["observed_post_id"] == "p1"
+    assert result["items"][0]["body_raw"] == "第一行\n第二行"
+    assert result["items"][0]["assets"][0]["ordinal"] == 1
+    assert result["items"][0]["assets"][0]["sha256"] == "imagehash"

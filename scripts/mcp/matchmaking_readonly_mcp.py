@@ -335,6 +335,56 @@ class ReadOnlyStore:
             items.append(item)
         return {"items": items, "include_body": include_body, "read_only": True}
 
+    def tool_list_verified_xhs_archives(self, args: dict[str, Any]) -> dict[str, Any]:
+        """Expose verified archive evidence without files, credentials or local paths."""
+        workspace_id = self._require_workspace(args)
+        limit = clamp_limit(args.get("limit"), 20)
+        include_body = bool(args.get("include_body", False))
+        with self._connect() as db:
+            try:
+                rows = db.execute(
+                    """SELECT v.id,v.extraction_id,v.post_id,v.observed_post_id,v.body_raw,
+                              v.body_normalized,v.body_source,v.archive_status,v.verification_status,
+                              v.content_sha256,v.manifest_sha256,v.captured_at,v.collector_version,
+                              e.url,e.title,e.author,e.expected_asset_count,e.saved_asset_count
+                       FROM xhs_archive_versions v
+                       JOIN xhs_post_extractions e
+                         ON e.workspace_id=v.workspace_id AND e.id=v.extraction_id
+                       WHERE v.workspace_id=? ORDER BY v.captured_at DESC LIMIT ?""",
+                    (workspace_id, limit),
+                ).fetchall()
+            except sqlite3.OperationalError:
+                return {
+                    "items": [],
+                    "include_body": include_body,
+                    "supported": False,
+                    "message": "当前数据库尚未执行小红书归档 V2 迁移",
+                    "read_only": True,
+                }
+            items = []
+            for row in rows:
+                item = dict(row)
+                raw = item.pop("body_raw", "")
+                normalized = item.pop("body_normalized", "")
+                if include_body:
+                    item["body_raw"] = clean_text(raw, MAX_TEXT)
+                    item["body_normalized"] = clean_text(normalized, MAX_TEXT)
+                assets = db.execute(
+                    """SELECT role,ordinal,mime_detected,extension,width,height,duration_ms,
+                              byte_size,sha256,status,error_code
+                       FROM xhs_post_assets
+                       WHERE workspace_id=? AND archive_id=? ORDER BY role,ordinal""",
+                    (workspace_id, item["id"]),
+                ).fetchall()
+                item["assets"] = [dict(asset) for asset in assets]
+                items.append(item)
+        return {
+            "items": items,
+            "include_body": include_body,
+            "supported": True,
+            "read_only": True,
+        }
+
     def tool_list_performance(self, args: dict[str, Any]) -> dict[str, Any]:
         workspace_id = self._require_workspace(args)
         limit = clamp_limit(args.get("limit"), 30)
@@ -404,6 +454,11 @@ TOOLS = [
     {
         "name": "list_social_extractions",
         "description": "读取已保存的小红书正文提取状态和互动数据；include_body=true 才返回正文。",
+        "inputSchema": {"type": "object", "properties": {"workspace_id": {"type": "string"}, "include_body": {"type": "boolean"}, "limit": {"type": "integer", "minimum": 1, "maximum": MAX_LIMIT}}, "required": ["workspace_id"]},
+    },
+    {
+        "name": "list_verified_xhs_archives",
+        "description": "读取已经严格归档的小红书正文、图片顺序、哈希和完整性证据；include_body=true 才返回正文。",
         "inputSchema": {"type": "object", "properties": {"workspace_id": {"type": "string"}, "include_body": {"type": "boolean"}, "limit": {"type": "integer", "minimum": 1, "maximum": MAX_LIMIT}}, "required": ["workspace_id"]},
     },
     {
