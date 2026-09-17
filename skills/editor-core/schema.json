@@ -1,0 +1,34 @@
+{
+  "metadata": {"version": "1.3.0", "role": "editor"},
+  "input": {
+    "required": ["task", "brand_profile", "draft", "sources", "research_packet"],
+    "description": "待审初稿、来源、常用信息和确定性质量检查结果"
+  },
+  "output": {
+    "type": "object",
+    "additionalProperties": false,
+    "properties": {
+      "final_draft": {"type": "object", "additionalProperties": false, "properties": {
+        "title": {"type": "string"}, "alternative_titles": {"type": "array", "items": {"type": "string"}}, "body": {"type": "string"},
+        "platform_variants": {"type": "array", "items": {"type": "object", "additionalProperties": false, "properties": {"platform": {"type": "string"}, "content": {"type": "string"}}, "required": ["platform", "content"]}}, "cta": {"type": "string"}, "tags": {"type": "array", "items": {"type": "string"}},
+        "deliverables": {"type": "object", "additionalProperties": false, "properties": {
+          "moments_posts": {"type": "array", "items": {"type": "object", "additionalProperties": false, "properties": {"day": {"type": "integer"}, "time": {"type": "string"}, "role": {"type": "string"}, "purpose": {"type": "string"}, "content": {"type": "string"}, "follow_up": {"type": "string"}}, "required": ["day", "time", "role", "purpose", "content", "follow_up"]}},
+          "xiaohongshu_publish": {"type": "object", "additionalProperties": false, "properties": {"title": {"type": "string"}, "body": {"type": "string"}, "tags": {"type": "array", "items": {"type": "string"}}}, "required": ["title", "body", "tags"]},
+          "douyin_script": {"type": "object", "additionalProperties": false, "properties": {"hook": {"type": "string"}, "script": {"type": "string"}, "emotion_beats": {"type": "array", "items": {"type": "string"}}, "ending": {"type": "string"}}, "required": ["hook", "script", "emotion_beats", "ending"]},
+          "life_case_variants": {"type": "array", "items": {"type": "object", "additionalProperties": false, "properties": {"angle": {"type": "string", "enum": ["daily", "reflection", "soft_business"]}, "label": {"type": "string"}, "body": {"type": "string"}, "rationale": {"type": "string"}, "recommended": {"type": "boolean"}}, "required": ["angle", "label", "body", "rationale", "recommended"]}}
+        }, "required": ["moments_posts", "xiaohongshu_publish", "douyin_script", "life_case_variants"]},
+        "claims": {"type": "array", "items": {"type": "object", "additionalProperties": false, "properties": {"claim": {"type": "string"}, "evidence_ids": {"type": "array", "items": {"type": "string"}}, "status": {"type": "string", "enum": ["verified", "pending"]}}, "required": ["claim", "evidence_ids", "status"]}},
+        "conversion_structure": {"type": "object", "additionalProperties": false, "properties": {"hook": {"type": "string"}, "trust": {"type": "string"}, "proof": {"type": "string"}, "objection": {"type": "string"}, "action": {"type": "string"}}, "required": ["hook", "trust", "proof", "objection", "action"]}
+      }, "required": ["title", "alternative_titles", "body", "platform_variants", "cta", "tags", "deliverables", "claims", "conversion_structure"]},
+      "scores": {"type": "object", "additionalProperties": false, "properties": {"conversion": {"type": "number"}, "insight": {"type": "number"}, "brand": {"type": "number"}, "evidence": {"type": "number"}, "originality": {"type": "number"}, "platform": {"type": "number"}}, "required": ["conversion", "insight", "brand", "evidence", "originality", "platform"]},
+      "blocking_issues": {"type": "array", "items": {"type": "string"}},
+      "revision_instructions": {"type": "array", "items": {"type": "string"}},
+      "change_notes": {"type": "array", "items": {"type": "object", "additionalProperties": false, "properties": {"location": {"type": "string"}, "before": {"type": "string"}, "after": {"type": "string"}, "reason": {"type": "string"}}, "required": ["location", "before", "after", "reason"]}},
+      "change_summary": {"type": "string"},
+      "conversion_structure": {"type": "object", "additionalProperties": false, "properties": {"hook": {"type": "string"}, "trust": {"type": "string"}, "proof": {"type": "string"}, "objection": {"type": "string"}, "action": {"type": "string"}}, "required": ["hook", "trust", "proof", "objection", "action"]},
+      "risks": {"type": "array", "items": {"type": "string"}},
+      "decision": {"type": "string", "enum": ["PASS", "REVISE"]}
+    },
+    "required": ["final_draft", "scores", "blocking_issues", "revision_instructions", "change_notes", "change_summary", "conversion_structure", "risks", "decision"]
+  }
+}

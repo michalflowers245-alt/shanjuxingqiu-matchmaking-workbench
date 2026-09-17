@@ -1,0 +1,8 @@
+{
+  "id": "example-inspector",
+  "name": "文案结构检查示例",
+  "version": "1.0.0",
+  "entrypoint": "main.py",
+  "description": "演示如何注册不接触密钥的本地分析工具"
+}
+

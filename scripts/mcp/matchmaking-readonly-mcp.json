@@ -1,0 +1,13 @@
+{
+  "mcpServers": {
+    "相亲工作台只读数据": {
+      "command": "/Users/mac/Applications/AI文案工作台/.venv/bin/python",
+      "args": [
+        "/Users/mac/Applications/AI文案工作台/scripts/mcp/matchmaking_readonly_mcp.py"
+      ],
+      "env": {
+        "WORKBENCH_MCP_DB_PATH": "/Users/mac/Applications/AI文案工作台/.workbench/copy_workbench.sqlite3"
+      }
+    }
+  }
+}
