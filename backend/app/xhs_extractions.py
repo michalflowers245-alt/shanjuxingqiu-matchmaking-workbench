@@ -15,7 +15,17 @@ JSON_COLUMNS = {
     "metrics_json": ("metrics", {}),
     "field_sources_json": ("field_sources", {}),
     "diagnostics_json": ("diagnostics", {}),
+    "body_evidence_json": ("body_evidence", {}),
 }
+
+
+def _safe_error_message(value: str) -> str:
+    text = re.sub(r"(?i)(authorization|cookie|token|xsec_token|signature|sign)=([^\s&]+)", r"\1=[REDACTED]", value)
+    return re.sub(
+        r"https?://[^\s]+",
+        lambda match: urllib.parse.urlunsplit((*urllib.parse.urlsplit(match.group(0))[:3], "", "")),
+        text,
+    )[:500]
 
 
 class XiaohongshuExtractionService:
@@ -78,7 +88,7 @@ class XiaohongshuExtractionService:
         if not public_url:
             return False
         existing = self.get(workspace_id, public_url)
-        if existing and existing.get("status") in {"success", "partial"} and existing.get("merged_copy"):
+        if existing and existing.get("archive_status") == "COMPLETE":
             return False
         if not self._put_job(workspace_id, public_url, search_keyword.strip()[:180], title_hint.strip()[:500]):
             return False
@@ -98,6 +108,33 @@ class XiaohongshuExtractionService:
                 (new_id("xhs"), workspace_id, public_url, search_keyword.strip()[:180], title_hint.strip()[:500], now, now),
             )
         return True
+
+    def ensure_archive_record(
+        self, workspace_id: str, url: str, *, search_keyword: str = "", title_hint: str = "",
+    ) -> dict[str, Any]:
+        """Create the minimal scoped record needed by the strict archive queue.
+
+        This deliberately does not start the legacy OCR/ASR extractor. The archive
+        worker reads and verifies the exact post directly in the authorized browser.
+        """
+        public_url = self._public_url(url)
+        if not public_url:
+            raise ValueError("不是可识别的小红书原帖链接")
+        existing = self.get(workspace_id, public_url)
+        if existing:
+            return existing
+        now = utc_now()
+        extraction_id = new_id("xhs")
+        self.db.execute(
+            """INSERT INTO xhs_post_extractions
+            (id,workspace_id,url,search_keyword,title,status,extracted_at,updated_at)
+            VALUES(?,?,?,?,?,'ready_to_archive',?,?)""",
+            (
+                extraction_id, workspace_id, public_url, search_keyword.strip()[:180],
+                title_hint.strip()[:500], now, now,
+            ),
+        )
+        return self.get_by_id(workspace_id, extraction_id) or {}
 
     def enqueue_results(self, workspace_id: str, payload: dict[str, Any], limit: int = 6) -> int:
         """Automatically queue Xiaohongshu originals from a radar run or topic search."""
@@ -155,7 +192,7 @@ class XiaohongshuExtractionService:
                     """UPDATE xhs_post_extractions
                     SET status='failed',failure_stage='worker_error',error_message=?,updated_at=?
                     WHERE workspace_id=? AND url=?""",
-                    (f"自动提取失败：{str(exc)[:500]}", utc_now(), workspace_id, url),
+                    (f"自动提取失败：{_safe_error_message(str(exc))}", utc_now(), workspace_id, url),
                 )
             finally:
                 with self._queue_lock:
@@ -178,13 +215,52 @@ class XiaohongshuExtractionService:
             "SELECT * FROM xhs_post_extractions WHERE workspace_id=? ORDER BY extracted_at DESC LIMIT ?",
             (workspace_id, max(1, min(limit, 200))),
         )
-        return [self.decode(row) or {} for row in rows]
+        return [self._with_archive(self.decode(row) or {}) for row in rows]
 
     def get(self, workspace_id: str, url: str) -> dict[str, Any] | None:
-        return self.decode(self.db.one(
+        decoded = self.decode(self.db.one(
             "SELECT * FROM xhs_post_extractions WHERE workspace_id=? AND url=?",
             (workspace_id, url),
         ))
+        return self._with_archive(decoded) if decoded else None
+
+    def get_by_id(self, workspace_id: str, extraction_id: str) -> dict[str, Any] | None:
+        decoded = self.decode(self.db.one(
+            "SELECT * FROM xhs_post_extractions WHERE workspace_id=? AND id=?",
+            (workspace_id, extraction_id),
+        ))
+        return self._with_archive(decoded) if decoded else None
+
+    def _with_archive(self, value: dict[str, Any]) -> dict[str, Any]:
+        workspace_id, extraction_id = str(value["workspace_id"]), str(value["id"])
+        archive = self.db.one(
+            """SELECT * FROM xhs_archive_versions WHERE workspace_id=? AND extraction_id=?
+            ORDER BY captured_at DESC LIMIT 1""",
+            (workspace_id, extraction_id),
+        )
+        if archive:
+            archive["body_evidence"] = json_loads(archive.pop("body_evidence_json", None), {})
+            assets = self.db.all(
+                "SELECT * FROM xhs_post_assets WHERE workspace_id=? AND archive_id=? ORDER BY role,ordinal",
+                (workspace_id, archive["id"]),
+            )
+            for asset in assets:
+                asset["evidence"] = json_loads(asset.pop("evidence_json", None), {})
+                asset["download_url"] = (
+                    f"/api/topic-radar/xhs/archives/{archive['id']}/assets/{asset['id']}?workspace_id={urllib.parse.quote(workspace_id)}"
+                    if asset.get("status") == "SAVED" else ""
+                )
+            archive["assets"] = assets
+        value["archive"] = archive
+        job = self.db.one(
+            """SELECT * FROM xhs_archive_jobs WHERE workspace_id=? AND extraction_id=?
+            ORDER BY created_at DESC LIMIT 1""",
+            (workspace_id, extraction_id),
+        )
+        if job:
+            job["progress"] = json_loads(job.pop("progress_json", None), {})
+        value["archive_job"] = job
+        return value
 
     def extract(
         self,
@@ -217,6 +293,7 @@ class XiaohongshuExtractionService:
                 "platform_limited": "platform_limited",
                 "post_unavailable": "unavailable",
                 "invalid_post_url": "invalid",
+                "identity_mismatch": "identity_mismatch",
             }
             result = {
                 "url": url,
@@ -224,7 +301,7 @@ class XiaohongshuExtractionService:
                 "title": title_hint,
                 "status": status_by_code.get(exc.code, "failed"),
                 "failure_stage": exc.code,
-                "error_message": str(exc),
+                "error_message": _safe_error_message(str(exc)),
                 "diagnostics": {"error_code": exc.code, **getattr(exc, "diagnostics", {})},
             }
         values = {
@@ -258,6 +335,19 @@ class XiaohongshuExtractionService:
             "extracted_at": now,
             "updated_at": now,
         }
+        result_status = values["status"]
+        if existing and result_status not in {"success", "partial"}:
+            preserve_status = bool(existing_full and existing_full.get("archive_status") == "COMPLETE")
+            self.db.execute(
+                """UPDATE xhs_post_extractions SET status=CASE WHEN ? THEN status ELSE ? END,
+                failure_stage=?,error_message=?,diagnostics_json=?,retry_count=?,updated_at=?
+                WHERE workspace_id=? AND url=?""",
+                (
+                    int(preserve_status), result_status, values["failure_stage"], values["error_message"],
+                    values["diagnostics_json"], retry_count, now, workspace_id, url,
+                ),
+            )
+            return self.get(workspace_id, url) or {}
         columns = list(values)
         placeholders = ",".join("?" for _ in columns)
         updates = ",".join(f"{column}=excluded.{column}" for column in columns if column not in {"id", "workspace_id"})

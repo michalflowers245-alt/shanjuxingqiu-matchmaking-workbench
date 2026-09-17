@@ -1,5 +1,6 @@
 .env
 .workbench/
+.workbench-test/
 .venv/
 node_modules/
 backend/__pycache__/
@@ -10,5 +11,6 @@ frontend/dist/
 .pytest_cache/
 *.pyc
 *.log
+artifacts/test-logs/
 frontend/vite.config.js
 frontend/vite.config.d.ts

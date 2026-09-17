@@ -181,7 +181,7 @@ def test_xhs_search_recovery_prefers_same_post_and_keeps_access_token():
     assert "tracking" not in resolved
 
 
-def test_xhs_search_recovery_can_match_republished_note_by_title():
+def test_xhs_search_recovery_never_replaces_post_with_similar_title():
     rows = [{
         "href": "https://www.xiaohongshu.com/explore/new-note?xsec_token=new-token",
         "title": "长沙相亲｜近期能面基的来",
@@ -189,7 +189,7 @@ def test_xhs_search_recovery_can_match_republished_note_by_title():
 
     resolved = _best_xhs_search_result(rows, "old-note", "长沙相亲｜近期能面基的来")
 
-    assert resolved.endswith("new-note?xsec_token=new-token")
+    assert resolved == ""
 
 
 def test_xhs_visible_search_card_becomes_tokenized_original_post_url():

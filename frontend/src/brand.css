@@ -586,6 +586,12 @@ select, input, .option-grid textarea { border-color: #eddee3; border-radius: 9px
 .xhs-extraction-error { display: flex; align-items: flex-start; gap: 5px; padding: 7px; border-radius: 8px; color: #9a4935; background: #fff0e9; font-size: 8px; line-height: 1.55; }
 .xhs-extraction-error svg { width: 11px; height: 11px; flex: 0 0 11px; }
 .xhs-extraction-panel > footer { display: grid !important; gap: 3px !important; margin: 0 !important; padding: 0 !important; color: #a69098 !important; font-size: 7px !important; }
+.xhs-archive-images { display: grid; grid-template-columns: repeat(auto-fit, minmax(110px, 1fr)); gap: 8px; }
+.xhs-archive-images figure { min-width: 0; margin: 0; padding: 6px; border: 1px solid #edd8df; border-radius: 9px; background: #fff; }
+.xhs-archive-images img { aspect-ratio: 3 / 4; max-height: 260px; margin: 0; object-fit: contain; }
+.xhs-archive-images figcaption { overflow: hidden; margin-top: 5px; color: #9b7c87; font-size: 7px; text-overflow: ellipsis; white-space: nowrap; }
+.xhs-archive-proof { display: flex; flex-wrap: wrap; gap: 5px; }
+.xhs-archive-proof span { padding: 4px 7px; border-radius: 999px; color: #7b5261; background: #f8edf1; font-size: 7px; }
 .radar-topic-source .xhs-extraction-panel, .radar-recommendation .xhs-extraction-panel { grid-column: 1 / -1; }
 .xhs-copy-disclosure { margin-top: 10px; border: 1px solid #edc9d5; border-radius: 11px; background: #fff8fb; }
 .xhs-copy-disclosure > summary { display: flex; align-items: center; justify-content: space-between; gap: 10px; padding: 10px 11px; color: #9b3759; cursor: pointer; list-style: none; }

@@ -42,7 +42,7 @@ def life_service(life_db: Database, tmp_path: Path) -> LifeCaseService:
     return LifeCaseService(db=life_db, root=tmp_path / "originals")
 
 
-def test_schema_is_v7_and_life_case_original_is_preserved(
+def test_schema_is_v8_and_life_case_original_is_preserved(
     life_db: Database,
     life_service: LifeCaseService,
 ):
@@ -57,7 +57,7 @@ def test_schema_is_v7_and_life_case_original_is_preserved(
         images=[("../../花店\n照片.png", original)],
     )
 
-    assert life_db.one("SELECT value FROM schema_meta WHERE key='schema_version'")["value"] == "7"
+    assert life_db.one("SELECT value FROM schema_meta WHERE key='schema_version'")["value"] == "8"
     assert case["title"].startswith("2026-09-13 · 下午路过花店")
     assert case["note_text"].startswith("下午路过花店")
     assert case["media"][0]["display_name"] == "花店 照片.png"

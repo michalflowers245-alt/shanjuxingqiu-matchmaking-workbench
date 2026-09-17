@@ -6,12 +6,13 @@ from pathlib import Path
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
-STATE_DIR = PROJECT_ROOT / ".workbench"
+STATE_DIR = Path(os.getenv("WORKBENCH_STATE_DIR", str(PROJECT_ROOT / ".workbench"))).expanduser().resolve()
 UPLOAD_DIR = STATE_DIR / "uploads"
 EXPORT_DIR = STATE_DIR / "exports"
 ASSET_DIR = STATE_DIR / "assets"
 LIFE_CASE_DIR = STATE_DIR / "life_cases"
 RADAR_CAPTURE_DIR = STATE_DIR / "radar_captures"
+XHS_ARCHIVE_DIR = STATE_DIR / "xhs_archives"
 SECRET_FILE = STATE_DIR / "secrets.json"
 DB_PATH = STATE_DIR / "copy_workbench.sqlite3"
 FRONTEND_DIST = PROJECT_ROOT / "frontend" / "dist"
@@ -43,7 +44,7 @@ class Settings:
 
 
 def ensure_directories() -> None:
-    for directory in (STATE_DIR, UPLOAD_DIR, EXPORT_DIR, ASSET_DIR, LIFE_CASE_DIR, RADAR_CAPTURE_DIR):
+    for directory in (STATE_DIR, UPLOAD_DIR, EXPORT_DIR, ASSET_DIR, LIFE_CASE_DIR, RADAR_CAPTURE_DIR, XHS_ARCHIVE_DIR):
         directory.mkdir(parents=True, exist_ok=True)
 
 

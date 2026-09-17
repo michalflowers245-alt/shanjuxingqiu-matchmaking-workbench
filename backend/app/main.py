@@ -77,6 +77,7 @@ from .schemas import (
     TopicDiscoveryCreate,
     TopicDiscoveryRequest,
     XiaohongshuExtractionRequest,
+    XiaohongshuArchiveRequest,
     WorkflowUpdate,
     WorkspaceCreate,
     WorkspaceUpdate,
@@ -86,6 +87,7 @@ from .security import vault
 from .skills import skill_registry
 from .workflow import WEIGHTS, performance_insights, task_worker, weighted_score, workflow_engine
 from .xhs_extractions import xhs_extraction_service
+from .xhs_archive import xhs_archive_service
 
 
 if os.getenv("WORKBENCH_DEBUG_STACKS") == "1":
@@ -169,19 +171,22 @@ def decode_radar_run(row: dict[str, Any] | None) -> dict[str, Any]:
 async def lifespan(_: FastAPI) -> AsyncIterator[None]:
     database.initialize()
     database.recover_jobs()
-    topic_radar_service.recover_interrupted_runs()
-    skill_registry.reload()
-    plugin_manager.reload()
-    if os.getenv("WORKBENCH_DISABLE_WORKERS") != "1":
+    workers_enabled = os.getenv("WORKBENCH_DISABLE_WORKERS") != "1"
+    if workers_enabled:
+        topic_radar_service.recover_interrupted_runs()
+        skill_registry.reload()
+        plugin_manager.reload()
         task_worker.start()
         publish_worker.start()
         xhs_extraction_service.start()
+        xhs_archive_service.start()
         topic_radar_worker.start()
     yield
     task_worker.stop()
     publish_worker.stop()
     topic_radar_worker.stop()
     xhs_extraction_service.stop()
+    xhs_archive_service.stop()
 
 
 app = FastAPI(title="AI 文案工作台", version="2.0.0", lifespan=lifespan)
@@ -1508,6 +1513,50 @@ def extract_xiaohongshu_post(payload: XiaohongshuExtractionRequest) -> dict[str,
         title_hint=payload.title_hint,
         force=payload.force,
     )}
+
+
+@app.post("/api/topic-radar/xhs/archive", status_code=202)
+def archive_xiaohongshu_post(payload: XiaohongshuArchiveRequest) -> dict[str, Any]:
+    require_workspace(payload.workspace_id)
+    try:
+        extraction_id = payload.extraction_id
+        if not extraction_id:
+            extraction = xhs_extraction_service.ensure_archive_record(
+                payload.workspace_id,
+                str(payload.url),
+                search_keyword=payload.search_keyword,
+                title_hint=payload.title_hint,
+            )
+            extraction_id = str(extraction["id"])
+        job = xhs_archive_service.enqueue(
+            payload.workspace_id,
+            extraction_id,
+            resume_after_user_action=payload.resume_after_user_action,
+        )
+    except ValueError as exc:
+        raise HTTPException(404, str(exc)) from exc
+    extraction = xhs_extraction_service.get_by_id(payload.workspace_id, extraction_id)
+    return {"job": job, "extraction": extraction}
+
+
+@app.get("/api/topic-radar/xhs/archive-jobs/{job_id}")
+def get_xiaohongshu_archive_job(job_id: str, workspace_id: str) -> dict[str, Any]:
+    require_workspace(workspace_id)
+    job = xhs_archive_service.get_job(workspace_id, job_id)
+    if not job:
+        raise HTTPException(404, "归档任务不存在")
+    extraction = xhs_extraction_service.get_by_id(workspace_id, str(job["extraction_id"]))
+    return {"job": job, "extraction": extraction}
+
+
+@app.get("/api/topic-radar/xhs/archives/{archive_id}/assets/{asset_id}")
+def get_xiaohongshu_archive_asset(archive_id: str, asset_id: str, workspace_id: str) -> FileResponse:
+    require_workspace(workspace_id)
+    try:
+        path, media_type = xhs_archive_service.resolve_asset(workspace_id, archive_id, asset_id)
+    except FileNotFoundError as exc:
+        raise HTTPException(404, str(exc)) from exc
+    return FileResponse(path, media_type=media_type, filename=path.name)
 
 
 @app.get("/api/topic-radar/xhs/captures/{post_key}/{filename}")

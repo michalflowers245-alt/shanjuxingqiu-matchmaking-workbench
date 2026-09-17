@@ -181,9 +181,7 @@ def _public_post_url(platform: str, value: str) -> str:
 def _best_xhs_search_result(
     rows: list[dict[str, Any]], post_key: str, title_hint: str,
 ) -> str:
-    """Pick the same post, preferring its platform access token when available."""
-    normalized_hint = re.sub(r"\W+", "", str(title_hint or "")).lower()
-    best_url, best_score = "", 0.0
+    """Return only the same post ID; a similar title is never an identity key."""
     for row in rows:
         url = _safe_url("xiaohongshu", str(row.get("href") or ""))
         if not url:
@@ -193,6 +191,24 @@ def _best_xhs_search_result(
         candidate_key = match.group(1) if match else ""
         if candidate_key == post_key:
             return url
+    return ""
+
+
+def _similar_xhs_search_result(
+    rows: list[dict[str, Any]], post_key: str, title_hint: str,
+) -> tuple[str, str]:
+    """Find a title match only to report IDENTITY_MISMATCH, never to archive it."""
+    normalized_hint = re.sub(r"\W+", "", str(title_hint or "")).lower()
+    best_url, best_key, best_score = "", "", 0.0
+    for row in rows:
+        url = _safe_url("xiaohongshu", str(row.get("href") or ""))
+        if not url:
+            continue
+        path = urllib.parse.urlsplit(url).path
+        match = re.search(r"/(?:explore|discovery/item)/([A-Za-z0-9]+)", path)
+        candidate_key = match.group(1) if match else ""
+        if not candidate_key or candidate_key == post_key:
+            continue
         candidate_title = re.sub(r"\W+", "", str(row.get("title") or row.get("text") or "")).lower()
         if not normalized_hint or not candidate_title:
             continue
@@ -200,8 +216,8 @@ def _best_xhs_search_result(
         if normalized_hint in candidate_title or candidate_title in normalized_hint:
             score = max(score, 0.86)
         if score > best_score:
-            best_url, best_score = url, score
-    return best_url if best_score >= 0.58 else ""
+            best_url, best_key, best_score = url, candidate_key, score
+    return (best_url, best_key) if best_score >= 0.58 else ("", "")
 
 
 def _run_local_ocr(image_path: Path) -> dict[str, str]:
@@ -343,14 +359,29 @@ class PlatformBrowserCollector:
                     context = browser.contexts[0]
                     host_marker = "xiaohongshu.com" if platform == "xiaohongshu" else "douyin.com"
                     page = next((item for item in context.pages if host_marker in item.url), None) or context.new_page()
+                    selector = (
+                        'a[href*="/search_result/"],a[href*="/explore/"],a[href*="/discovery/item/"]'
+                        if platform == "xiaohongshu" else
+                        'a[href*="/video/"],a[href*="/note/"]'
+                    )
+                    target_url = _search_url(platform, query)
+                    current = urllib.parse.urlsplit(page.url)
+                    target = urllib.parse.urlsplit(target_url)
+                    same_search = (
+                        current.netloc == target.netloc
+                        and current.path == target.path
+                        and urllib.parse.parse_qs(current.query).get("keyword")
+                        == urllib.parse.parse_qs(target.query).get("keyword")
+                    )
                     _debug_platform(f"search:{platform}:goto-start")
-                    page.goto(_search_url(platform, query), wait_until="domcontentloaded", timeout=10000)
+                    if not (same_search and page.locator(selector).count() > 0):
+                        page.goto(target_url, wait_until="domcontentloaded", timeout=10000)
                     _debug_platform(f"search:{platform}:goto-done")
-                    selector = "section.note-item" if platform == "xiaohongshu" else "li .search-result-card"
                     try:
-                        page.wait_for_selector(selector, state="attached", timeout=1800)
+                        page.wait_for_selector(selector, state="attached", timeout=10000)
+                        page.wait_for_timeout(500)
                     except Exception:
-                        page.wait_for_timeout(700)
+                        page.wait_for_timeout(1200)
                     # Chrome 152 can leave the CDP Input.dispatchMouseEvent
                     # command pending forever on an attached persistent
                     # profile.  The first result batch is already present in
@@ -476,6 +507,8 @@ class PlatformBrowserCollector:
                     )
                     if unavailable and (title_hint.strip() or search_keyword.strip()):
                         recovered_url = ""
+                        mismatch_url = ""
+                        mismatch_post_key = ""
                         attempted_queries: list[str] = []
                         clean_title = _clean_xhs_title_hint(title_hint)
                         for query in (clean_title, title_hint.strip(), search_keyword.strip()):
@@ -510,6 +543,9 @@ class PlatformBrowserCollector:
                             recovered_url = _best_xhs_search_result(search_data.get("rows") or [], post_key, clean_title or title_hint)
                             if recovered_url:
                                 break
+                            mismatch_url, mismatch_post_key = _similar_xhs_search_result(
+                                search_data.get("rows") or [], post_key, clean_title or title_hint,
+                            )
                         if recovered_url:
                             url = recovered_url
                             self._remember_xhs_access_url(recovered_url)
@@ -519,6 +555,16 @@ class PlatformBrowserCollector:
                         else:
                             page.close()
                             page = None
+                            if mismatch_url:
+                                raise PlatformBrowserError(
+                                    "搜索结果标题相似，但帖子 ID 不一致，已拒绝用其他帖子覆盖原记录",
+                                    code="identity_mismatch",
+                                    diagnostics={
+                                        "target_post_id": post_key,
+                                        "observed_post_id": mismatch_post_key,
+                                        "candidate_url": _diagnostic_url(mismatch_url),
+                                    },
+                                )
                             raise PlatformBrowserError(
                                 "原帖旧链接已失效，工作台按标题重新搜索后仍未找到同一篇帖子",
                                 code="post_unavailable",
@@ -660,6 +706,348 @@ class PlatformBrowserCollector:
                 if page is not None and not keep_page_open:
                     try: page.close()
                     except Exception: pass
+
+    def archive_xiaohongshu_detail(
+        self, value: str, *, search_keyword: str = "", title_hint: str = "",
+    ) -> dict[str, Any]:
+        """Read one authorized detail page and return exact text plus image bytes.
+
+        Temporary signed URLs and response headers remain in memory.  The archive
+        repository receives only response bytes and a query-free source reference.
+        """
+        url = _safe_url("xiaohongshu", value)
+        parsed = urllib.parse.urlsplit(url)
+        match = re.search(r"/(?:explore|discovery/item)/([A-Za-z0-9]+)", parsed.path)
+        if not url or not match:
+            raise PlatformBrowserError("这不是可归档的小红书原帖链接", code="invalid_post_url")
+        if not self.status()["running"]:
+            raise PlatformBrowserError("平台采集浏览器尚未打开，请先打开并登录", code="browser_not_running")
+        target_post_id = match.group(1)
+        canonical_url = _public_post_url("xiaohongshu", url)
+        access_url = self._recent_xhs_access_url(canonical_url) or url
+        with self._lock:
+            page = None
+            keep_page_open = False
+            try:
+                from playwright.sync_api import sync_playwright
+
+                with sync_playwright() as playwright:
+                    browser = _connect_over_cdp(playwright, self.cdp_url)
+                    context = browser.contexts[0]
+                    page = context.new_page()
+                    observed_responses: list[Any] = []
+
+                    def remember_response(response: Any) -> None:
+                        try:
+                            content_type = str(response.headers.get("content-type") or "").lower()
+                            if content_type.startswith("image/"):
+                                observed_responses.append(response)
+                        except Exception:
+                            return
+
+                    page.on("response", remember_response)
+                    page.goto(access_url, wait_until="domcontentloaded", timeout=45000)
+                    page.wait_for_timeout(900)
+                    initial = page.evaluate(r"""() => ({
+                      title: document.title || '',
+                      text: (document.body?.innerText || '').slice(0, 5000),
+                      url: location.href
+                    })""")
+                    initial_text = urllib.parse.unquote(
+                        f"{initial.get('url')} {initial.get('title')} {initial.get('text')}"
+                    )
+                    if re.search(r"验证码|安全验证|验证后继续|完成验证", initial_text):
+                        keep_page_open = True
+                        page.bring_to_front()
+                        raise PlatformBrowserError(
+                            "小红书要求完成安全验证，请在采集浏览器中处理后点击继续补齐",
+                            code="verification_required",
+                        )
+                    if re.search(r"扫码登录|手机号登录|登录后查看|请先登录", initial_text):
+                        keep_page_open = True
+                        page.bring_to_front()
+                        raise PlatformBrowserError(
+                            "小红书登录已失效，请扫码登录后点击继续补齐",
+                            code="login_required",
+                        )
+                    unavailable = re.search(
+                        r"内容不存在|笔记不存在|已删除|页面不存在|当前笔记暂时无法浏览|error_code=300031|你访问的页面不见了",
+                        initial_text,
+                    )
+                    if unavailable:
+                        queries = []
+                        clean_title = _clean_xhs_title_hint(title_hint)
+                        mismatch_url = ""
+                        mismatch_post_id = ""
+                        recovered_url = ""
+                        for query in (clean_title, title_hint.strip(), search_keyword.strip()):
+                            query = query[:180]
+                            if not query or query in queries:
+                                continue
+                            queries.append(query)
+                            page.goto(_search_url("xiaohongshu", query), wait_until="domcontentloaded", timeout=45000)
+                            try:
+                                page.wait_for_selector(
+                                    'section.note-item a.cover[href*="/search_result/"]',
+                                    state="visible",
+                                    timeout=4000,
+                                )
+                            except Exception:
+                                page.wait_for_timeout(700)
+                            search_data = page.evaluate(r"""() => ({
+                              text:(document.body?.innerText||'').slice(0,5000), title:document.title||'',
+                              rows:[...document.querySelectorAll('section.note-item a.cover[href*="/search_result/"],section.note-item a.title[href*="/search_result/"],a[href*="/explore/"],a[href*="/discovery/item/"]')]
+                                .filter(link=>link.offsetParent!==null).slice(0,40).map(link=>{
+                                  let node=link,best=link,bestText=(link.innerText||'').trim();
+                                  for(let i=0;i<7&&node.parentElement;i+=1){node=node.parentElement;const text=(node.innerText||'').trim();if(text.length>=bestText.length&&text.length<=1500){best=node;bestText=text;}if(node.matches('article,li,section,[class*="note-item"]'))break;}
+                                  return {href:link.href||'',title:(best.querySelector('.title')?.innerText||link.getAttribute('title')||bestText.split(/\n+/).find(v=>v.trim().length>5)||'').trim(),text:bestText};
+                                })
+                            })""")
+                            search_text = f"{search_data.get('title')} {search_data.get('text')}"
+                            if re.search(r"验证码|安全验证|验证后继续|完成验证", search_text):
+                                keep_page_open = True
+                                page.bring_to_front()
+                                raise PlatformBrowserError(
+                                    "小红书要求完成安全验证，请处理后点击继续补齐",
+                                    code="verification_required",
+                                )
+                            recovered_url = _best_xhs_search_result(
+                                search_data.get("rows") or [], target_post_id, clean_title or title_hint,
+                            )
+                            if recovered_url:
+                                break
+                            mismatch_url, mismatch_post_id = _similar_xhs_search_result(
+                                search_data.get("rows") or [], target_post_id, clean_title or title_hint,
+                            )
+                        if not recovered_url:
+                            if mismatch_url:
+                                raise PlatformBrowserError(
+                                    "只找到了标题相似但 ID 不同的帖子，已拒绝归档",
+                                    code="identity_mismatch",
+                                    diagnostics={
+                                        "target_post_id": target_post_id,
+                                        "observed_post_id": mismatch_post_id,
+                                        "candidate_url": _diagnostic_url(mismatch_url),
+                                    },
+                                )
+                            raise PlatformBrowserError(
+                                "原帖不存在、已删除或当前账号不可访问",
+                                code="post_unavailable",
+                                diagnostics={"target_post_id": target_post_id, "attempted_queries": queries},
+                            )
+                        access_url = recovered_url
+                        self._remember_xhs_access_url(recovered_url)
+                        page.goto(recovered_url, wait_until="domcontentloaded", timeout=45000)
+                        page.wait_for_timeout(900)
+
+                    for pattern in (re.compile(r"^展开$"), re.compile(r"^全文$"), re.compile(r"展开正文")):
+                        for item in page.get_by_text(pattern).all()[:3]:
+                            try:
+                                if item.is_visible():
+                                    item.click(timeout=1200)
+                            except Exception:
+                                pass
+                    page.wait_for_timeout(300)
+                    data = page.evaluate(
+                        r"""targetId => {
+                          const visible = n => !!(n && (n.getClientRects().length || n.offsetParent !== null));
+                          const firstVisible = selectors => {
+                            for (const selector of selectors) for (const node of document.querySelectorAll(selector)) {
+                              if (visible(node)) return node;
+                            }
+                            return null;
+                          };
+                          const stateRoots=[];
+                          for (const key of ['__INITIAL_STATE__','__INITIAL_DATA__','__APOLLO_STATE__']) {
+                            try { if (window[key] && typeof window[key]==='object') stateRoots.push(window[key]); } catch {}
+                          }
+                          const seen=new WeakSet(); let exact=null;
+                          const walk=(value,depth=0)=>{
+                            if (exact || !value || typeof value!=='object' || depth>12 || seen.has(value)) return;
+                            seen.add(value);
+                            let id='';
+                            for (const key of ['noteId','note_id','postId','post_id','id']) {
+                              try { if (typeof value[key]==='string') { id=value[key]; if(id===targetId) break; } } catch {}
+                            }
+                            if (id===targetId && (typeof value.desc==='string' || Array.isArray(value.imageList) || Array.isArray(value.images))) exact=value;
+                            if (exact) return;
+                            try { for (const child of Object.values(value)) walk(child,depth+1); } catch {}
+                          };
+                          stateRoots.forEach(root=>walk(root));
+                          const rawFromState=exact && ['desc','noteDesc','description','content'].map(k=>exact[k]).find(v=>typeof v==='string');
+                          const domBody=firstVisible(['[data-testid="note-content"]','[data-testid="post-content"]','#detail-desc','.note-content .desc','[class*="note-detail"] [class*="desc"]']);
+                          const bodyRaw=typeof rawFromState==='string' ? rawFromState : (domBody ? (domBody.innerText ?? domBody.textContent ?? '') : null);
+                          const bodySource=typeof rawFromState==='string' ? 'embedded_state' : (domBody ? 'expanded_dom' : 'unavailable');
+                          const stateImages=exact && (exact.imageList || exact.image_list || exact.images);
+                          const pickUrl=item=>{
+                            if(typeof item==='string') return item;
+                            if(!item||typeof item!=='object') return '';
+                            for(const key of ['urlDefault','url_default','url','originalUrl','original_url','urlPre','url_pre']) if(typeof item[key]==='string'&&/^https?:/.test(item[key])) return item[key];
+                            for(const key of ['urlList','url_list','urls']) if(Array.isArray(item[key])) { const found=item[key].find(v=>typeof v==='string'&&/^https?:/.test(v)); if(found)return found; }
+                            return '';
+                          };
+                          let orderedBy='unknown'; let images=[]; let expected=null;
+                          if(Array.isArray(stateImages) && stateImages.length){
+                            images=stateImages.map((item,index)=>({url:pickUrl(item),ordinal:index+1,width:Number(item?.width||item?.imageWidth)||null,height:Number(item?.height||item?.imageHeight)||null,sourceKind:'embedded_state'})).filter(v=>v.url);
+                            expected=stateImages.length; orderedBy='page_state';
+                          } else {
+                            const nodes=[...document.querySelectorAll('[class*="note-detail"] [class*="swiper"] img,[class*="note-detail"] img,article [class*="swiper"] img')].filter(visible);
+                            const urls=new Set();
+                            for(const node of nodes){
+                              const candidates=[node.currentSrc,node.src,node.getAttribute('data-src'),node.getAttribute('data-original'),...(node.getAttribute('srcset')||'').split(',').map(v=>v.trim().split(/\s+/)[0])];
+                              const selected=candidates.find(v=>typeof v==='string'&&/^https?:/.test(v));
+                              if(!selected||urls.has(selected))continue;
+                              const rect=node.getBoundingClientRect(); if(rect.width<180||rect.height<120)continue;
+                              urls.add(selected); images.push({url:selected,ordinal:images.length+1,width:node.naturalWidth||null,height:node.naturalHeight||null,sourceKind:'ordered_carousel_dom'});
+                            }
+                            if(images.length){expected=images.length;orderedBy='carousel_dom';}
+                          }
+                          const canonical=document.querySelector('link[rel="canonical"]')?.href||location.href;
+                          const finalMatch=canonical.match(/\/(?:explore|discovery\/item)\/([A-Za-z0-9]+)/) || location.href.match(/\/(?:explore|discovery\/item)\/([A-Za-z0-9]+)/);
+                          const observedId=(exact && String(exact.noteId||exact.note_id||exact.postId||exact.post_id||exact.id||'')) || (finalMatch?.[1]||'');
+                          const meta=s=>document.querySelector(s)?.getAttribute('content')||'';
+                          const title=(exact && String(exact.title||exact.noteTitle||'')) || meta('meta[property="og:title"]') || firstVisible(['h1','[data-testid="note-title"]','#detail-title'])?.innerText || '';
+                          const author=(exact && String(exact.user?.nickname||exact.author?.name||'')) || meta('meta[name="author"]') || firstVisible(['[data-testid="author-name"]','a[href*="/user/profile"] [class*="name"]'])?.innerText || '';
+                          const publishedAt=(exact && String(exact.time||exact.publishTime||exact.publish_time||'')) || meta('meta[property="article:published_time"]') || '';
+                          const coverUrl=meta('meta[property="og:image"]');
+                          return {bodyRaw,bodySource,bodyVerified:bodySource==='embedded_state',images,expectedImageCount:expected,orderedBy,coverUrl,observedId,title,author,publishedAt,canonical,videoCount:document.querySelectorAll('video').length,pageTitle:document.title,finalUrl:location.href,visibleText:(document.body?.innerText||'').slice(0,5000)};
+                        }""",
+                        target_post_id,
+                    )
+                    diagnostic_text = urllib.parse.unquote(
+                        f"{data.get('finalUrl')} {data.get('pageTitle')} {data.get('visibleText')}"
+                    )
+                    if re.search(r"验证码|安全验证|验证后继续|完成验证", diagnostic_text):
+                        keep_page_open = True
+                        page.bring_to_front()
+                        raise PlatformBrowserError(
+                            "小红书要求完成安全验证，请处理后点击继续补齐",
+                            code="verification_required",
+                        )
+                    if re.search(r"IP存在风险|访问过于频繁|网络环境.*重试|error_code=300012", diagnostic_text):
+                        raise PlatformBrowserError(
+                            "小红书限制了当前网络或浏览器环境，请稍后重试",
+                            code="platform_limited",
+                        )
+                    observed_post_id = str(data.get("observedId") or "")
+                    if observed_post_id != target_post_id:
+                        raise PlatformBrowserError(
+                            "详情页帖子 ID 与目标帖子不一致，已拒绝归档",
+                            code="identity_mismatch",
+                            diagnostics={
+                                "target_post_id": target_post_id,
+                                "observed_post_id": observed_post_id,
+                                "final_url": _diagnostic_url(str(data.get("finalUrl") or "")),
+                            },
+                        )
+
+                    candidates: list[dict[str, Any]] = []
+                    for item in data.get("images") or []:
+                        if not isinstance(item, dict) or not str(item.get("url") or "").startswith(("http://", "https://")):
+                            continue
+                        candidates.append({
+                            "role": "carousel",
+                            "ordinal": int(item.get("ordinal") or len(candidates) + 1),
+                            "source_url": str(item["url"]),
+                            "source_kind": str(item.get("sourceKind") or "page_state"),
+                            "ordered_by": str(data.get("orderedBy") or "unknown"),
+                            "width": item.get("width"),
+                            "height": item.get("height"),
+                        })
+                    cover_url = str(data.get("coverUrl") or "")
+                    if cover_url.startswith(("http://", "https://")):
+                        candidates.append({
+                            "role": "cover", "ordinal": 1, "source_url": cover_url,
+                            "source_kind": "og_image", "ordered_by": "cover_metadata",
+                        })
+
+                    response_by_url = {str(response.url): response for response in observed_responses}
+                    assets: list[dict[str, Any]] = []
+                    for candidate in candidates[:40]:
+                        source_url = str(candidate["source_url"])
+                        payload: bytes | None = None
+                        declared = ""
+                        http_status: int | None = None
+                        source_kind = str(candidate["source_kind"])
+                        error_code = ""
+                        observed = response_by_url.get(source_url)
+                        if observed is not None:
+                            try:
+                                http_status = int(observed.status)
+                                declared = str(observed.headers.get("content-type") or "")
+                                if http_status == 200:
+                                    payload = observed.body()
+                                    source_kind = f"{source_kind}+network_response"
+                                else:
+                                    error_code = f"HTTP_{http_status}"
+                            except Exception:
+                                payload = None
+                        if payload is None:
+                            try:
+                                response = context.request.get(source_url, timeout=15000, fail_on_status_code=False)
+                                http_status = int(response.status)
+                                declared = str(response.headers.get("content-type") or declared)
+                                if http_status == 200:
+                                    body = response.body()
+                                    if len(body) <= 25 * 1024 * 1024:
+                                        payload = body
+                                        source_kind = f"{source_kind}+authorized_context_request"
+                                    else:
+                                        error_code = "IMAGE_TOO_LARGE"
+                                else:
+                                    error_code = f"HTTP_{http_status}"
+                            except Exception:
+                                error_code = error_code or "RESPONSE_BODY_UNAVAILABLE"
+                        assets.append({
+                            **candidate,
+                            "source_kind": source_kind,
+                            "mime_declared": declared,
+                            "http_status": http_status,
+                            "bytes": payload,
+                            "error_code": error_code if payload is None else "",
+                            "rendition": "browser_returned",
+                        })
+                    result = {
+                        "target_post_id": target_post_id,
+                        "observed_post_id": observed_post_id,
+                        "canonical_url": canonical_url,
+                        "title": str(data.get("title") or ""),
+                        "author": str(data.get("author") or ""),
+                        "published_at": str(data.get("publishedAt") or "") or None,
+                        "body_raw": data.get("bodyRaw"),
+                        "body_source": str(data.get("bodySource") or "unavailable"),
+                        "body_verified": bool(data.get("bodyVerified")),
+                        "body_evidence": {
+                            "source": str(data.get("bodySource") or "unavailable"),
+                            "character_count": len(data.get("bodyRaw") or ""),
+                            "same_post_id": True,
+                        },
+                        "expected_image_count": data.get("expectedImageCount"),
+                        "video_count": int(data.get("videoCount") or 0),
+                        "assets": assets,
+                        "diagnostics": {
+                            "page_title": str(data.get("pageTitle") or "")[:300],
+                            "final_url": _diagnostic_url(str(data.get("finalUrl") or "")),
+                            "ordered_by": str(data.get("orderedBy") or "unknown"),
+                            "candidate_count": len(candidates),
+                            "response_image_count": len(observed_responses),
+                        },
+                    }
+                    page.close()
+                    page = None
+                    return result
+            except PlatformBrowserError:
+                raise
+            except Exception as exc:
+                raise PlatformBrowserError(
+                    f"图文归档读取失败：{str(exc)[:180]}", code="archive_collect_failed"
+                ) from exc
+            finally:
+                if page is not None and not keep_page_open:
+                    try:
+                        page.close()
+                    except Exception:
+                        pass
 
 
 platform_browser_collector = PlatformBrowserCollector()

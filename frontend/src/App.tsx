@@ -1214,41 +1214,66 @@ function runRecommendations(run?: TopicRadarRun | null) {
   return values.filter((item): item is TopicRadarRecommendation | string => typeof item === 'string' || (Boolean(item) && typeof item === 'object'))
 }
 
-function XhsExtractionPanel({ extraction }: { extraction?: XiaohongshuExtraction }) {
+function XhsExtractionPanel({ extraction, onArchive, archiving = false }: {
+  extraction?: XiaohongshuExtraction
+  onArchive?: (resumeAfterUserAction?: boolean) => void
+  archiving?: boolean
+}) {
   if (!extraction) return null
-  const successful = extraction.status === 'success' || extraction.status === 'partial'
-  const pending = extraction.status === 'queued' || extraction.status === 'extracting'
-  const statusLabel = extraction.status === 'success' ? '完整文案已提取'
-    : extraction.status === 'partial' ? '已提取部分内容'
+  const archive = extraction.archive
+  const archiveJob = extraction.archive_job
+  const successful = extraction.status === 'success' || extraction.status === 'partial' || Boolean(archive)
+  const archivePending = archiving || archiveJob?.status === 'QUEUED' || archiveJob?.status === 'RUNNING'
+  const pending = extraction.status === 'queued' || extraction.status === 'extracting' || extraction.status === 'ready_to_archive' || archivePending
+  const archivePaused = archiveJob?.status === 'PAUSED'
+  const savedImages = archive?.assets.filter(item => item.role === 'carousel' && item.status === 'SAVED') || []
+  const cover = archive?.assets.find(item => item.role === 'cover' && item.status === 'SAVED')
+  const expectedImages = archiveJob?.progress.expected_asset_count ?? extraction.expected_asset_count
+  const statusLabel = archive?.archive_status === 'COMPLETE' ? '正文与原图已完整归档'
+    : archive?.archive_status === 'PARTIAL' ? '已保存部分内容，可继续补齐'
+      : extraction.status === 'success' ? '已读取页面可见内容，尚未校验原图'
+    : extraction.status === 'partial' ? '已读取部分页面内容'
       : extraction.status === 'queued' ? '已排队，系统会自动提取'
         : extraction.status === 'extracting' ? '正在自动提取完整文案'
+          : extraction.status === 'ready_to_archive' ? '已进入正文与原图归档队列'
       : extraction.status === 'needs_verification' ? '需要完成小红书安全验证'
         : extraction.status === 'needs_login' ? '需要登录小红书'
           : extraction.status === 'platform_limited' ? '平台暂时限制访问'
+            : extraction.status === 'identity_mismatch' ? '帖子 ID 不一致，已拒绝覆盖'
             : extraction.status === 'unavailable' ? '原帖已失效或不可访问' : '暂时无法提取'
   if (successful) return <details className="xhs-copy-disclosure">
-    <summary><span><FileText />原文已提取</span><b>查看原文 <ChevronDown /></b></summary>
+    <summary><span><FileText />{archive ? '查看归档内容' : '查看页面内容'}</span><b>{statusLabel} <ChevronDown /></b></summary>
     <section className="xhs-extraction-panel ready">
-      <header><div><span className="platform-dot xhs">小</span><strong>{statusLabel}</strong></div><b>{extraction.completeness || 0}% 完整度</b></header>
+      <header><div><span className="platform-dot xhs">小</span><strong>{archivePending && <LoaderCircle className="spin" />}{archivePending ? archiveJob?.progress.message || '正在归档' : statusLabel}</strong></div>{archive && <b>{savedImages.length}/{expectedImages ?? '未知'} 张原图</b>}</header>
       <div className="xhs-extraction-meta"><span>{extraction.author || '作者未读取'}</span>{extraction.published_at && <span>{extraction.published_at}</span>}{extraction.tags?.length > 0 && <span>{extraction.tags.slice(0, 6).join(' ')}</span>}</div>
-      <pre className="xhs-reading-copy">{extraction.merged_copy || extraction.body || extraction.image_text || [extraction.video_subtitle, extraction.video_speech].filter(Boolean).join('\n\n')}</pre>
-      {(extraction.screenshot_url || extraction.body || extraction.image_text || extraction.video_subtitle || extraction.video_speech) && <details className="xhs-extraction-details"><summary>查看提取明细 <ChevronDown /></summary>
+      {archive?.body_raw != null
+        ? <><small className="radar-summary-label">原始正文 · 来源：{archive.body_source}</small><pre className="xhs-reading-copy">{archive.body_raw}</pre></>
+        : <><small className="radar-summary-label">页面可见内容（尚未验证为原始全文）</small><pre className="xhs-reading-copy">{extraction.body || extraction.merged_copy || extraction.image_text || [extraction.video_subtitle, extraction.video_speech].filter(Boolean).join('\n\n')}</pre></>}
+      {(savedImages.length > 0 || cover) && <div className="xhs-archive-images">
+        {cover?.download_url && <figure><img src={apiUrl(cover.download_url)} alt="小红书封面原始响应" /><figcaption>封面 · {cover.width || '?'}×{cover.height || '?'} · {cover.extension || ''}</figcaption></figure>}
+        {savedImages.map(asset => asset.download_url && <figure key={asset.id}><img src={apiUrl(asset.download_url)} alt={`小红书原图 ${asset.ordinal}`} /><figcaption>第 {asset.ordinal} 张 · {asset.width || '?'}×{asset.height || '?'} · {asset.extension || ''}</figcaption></figure>)}
+      </div>}
+      {archive && <div className="xhs-archive-proof"><span>帖子 ID：{archive.post_id === archive.observed_post_id ? '已一致' : '不一致'}</span><span>正文：{archive.verification_status}</span><span>校验：{archive.manifest_sha256 ? '已生成清单哈希' : '待校验'}</span></div>}
+      {onArchive && archive?.archive_status !== 'COMPLETE' && <button className="xhs-extract-button" onClick={() => onArchive(archivePaused)} disabled={archivePending}>{archivePending ? <LoaderCircle className="spin" /> : <Save />}{archivePaused ? '完成登录或验证后继续补齐' : archive ? '继续补齐缺失内容' : '保存原图与正文'}</button>}
+      {(extraction.screenshot_url || extraction.body || extraction.image_text || extraction.video_subtitle || extraction.video_speech) && <details className="xhs-extraction-details"><summary>查看旧提取证据 <ChevronDown /></summary>
         {extraction.screenshot_url && <details><summary>采集截图 <ChevronDown /></summary><img src={apiUrl(extraction.screenshot_url)} alt="小红书原帖采集截图" /></details>}
-        {extraction.body && <details><summary>页面正文 <ChevronDown /></summary><pre>{extraction.body}</pre></details>}
+        {extraction.body && <details><summary>页面可见正文 <ChevronDown /></summary><pre>{extraction.body}</pre></details>}
         {extraction.image_text && <details><summary>图片文字（OCR） <ChevronDown /></summary><pre>{extraction.image_text}</pre></details>}
         {(extraction.video_subtitle || extraction.video_speech) && <details><summary>视频字幕 / 口播 <ChevronDown /></summary><pre>{[extraction.video_subtitle, extraction.video_speech].filter(Boolean).join('\n\n')}</pre></details>}
       </details>}
-      <footer><span>OCR：{extraction.ocr_message || extraction.ocr_status}</span><span>视频：{extraction.asr_message || extraction.asr_status}</span></footer>
+      {archiveJob?.error_code && <div className="xhs-extraction-error"><AlertTriangle /><span>{archiveJob.progress.message || archiveJob.error_code}</span></div>}
+      <footer><span>OCR 与字幕只作为辅助证据，不会补写原始正文。</span></footer>
     </section>
   </details>
   return <section className={`xhs-extraction-panel xhs-extraction-status ${pending ? 'pending' : 'failed'}`}>
-    <header><div><span className="platform-dot xhs">小</span><strong>{pending && <LoaderCircle className="spin" />}{statusLabel}</strong></div>{!pending && <b>{extraction.completeness || 0}% 完整度</b>}</header>
+    <header><div><span className="platform-dot xhs">小</span><strong>{pending && <LoaderCircle className="spin" />}{statusLabel}</strong></div></header>
     {extraction.error_message && <div className="xhs-extraction-error"><AlertTriangle /><span>{extraction.error_message}</span></div>}
+    {onArchive && !pending && extraction.status !== 'identity_mismatch' && <button className="xhs-extract-button" onClick={() => onArchive(archivePaused)} disabled={archivePending}>{archivePending ? <LoaderCircle className="spin" /> : <Save />}{archivePaused ? '完成登录或验证后继续' : '保存原图与正文'}</button>}
   </section>
 }
 
 function xhsNeedsRetry(extraction?: XiaohongshuExtraction) {
-  return Boolean(extraction && !['success', 'partial', 'queued', 'extracting'].includes(extraction.status))
+  return Boolean(extraction && !['success', 'partial', 'queued', 'extracting', 'ready_to_archive', 'identity_mismatch'].includes(extraction.status))
 }
 
 function xhsRetryLabel(extraction?: XiaohongshuExtraction) {
@@ -1278,6 +1303,7 @@ function RadarPage({ workspaceId, onCreateFromTopic, onTaskCreated, notify }: {
   const [creatingFromTopic, setCreatingFromTopic] = useState(false)
   const [xhsExtractions, setXhsExtractions] = useState<Record<string, XiaohongshuExtraction>>({})
   const [extractingUrl, setExtractingUrl] = useState('')
+  const [archivingId, setArchivingId] = useState('')
   const dailyMonitor = useMemo(() => monitors.find(item => item.monitor_kind === 'ip_daily') || null, [monitors])
 
   const loadXhsExtractions = useCallback(async () => {
@@ -1326,7 +1352,9 @@ function RadarPage({ workspaceId, onCreateFromTopic, onTaskCreated, notify }: {
     return () => { cancelled = true }
   }, [notify, workspaceId])
 
-  const hasAutomaticExtraction = Object.values(xhsExtractions).some(item => ['queued', 'extracting'].includes(item.status))
+  const hasAutomaticExtraction = Object.values(xhsExtractions).some(item =>
+    ['queued', 'extracting'].includes(item.status) || ['QUEUED', 'RUNNING'].includes(item.archive_job?.status || ''),
+  )
   useEffect(() => {
     if (!hasAutomaticExtraction) return
     const timer = window.setInterval(() => { loadXhsExtractions().catch(() => undefined) }, 2000)
@@ -1433,7 +1461,7 @@ function RadarPage({ workspaceId, onCreateFromTopic, onTaskCreated, notify }: {
       }))
       setXhsExtractions(current => ({ ...current, [result.extraction.url]: result.extraction, [url]: result.extraction }))
       if (result.extraction.status === 'success' || result.extraction.status === 'partial') {
-        if (!quiet) notify(`已提取小红书文案，完整度 ${result.extraction.completeness}%`)
+        if (!quiet) notify('已读取页面可见内容；点击“保存原图与正文”进行严格归档')
       } else if (!quiet) {
         notify(result.extraction.error_message || '暂时无法提取这篇小红书文案', 'error')
       }
@@ -1443,6 +1471,59 @@ function RadarPage({ workspaceId, onCreateFromTopic, onTaskCreated, notify }: {
       return null
     } finally {
       setExtractingUrl('')
+    }
+  }
+
+  const archiveXhsPost = async (extraction: XiaohongshuExtraction, resumeAfterUserAction = false) => {
+    setArchivingId(extraction.id)
+    try {
+      const response = await api<{ extraction: XiaohongshuExtraction; job: { status: string; progress?: { message?: string } } }>(
+        '/api/topic-radar/xhs/archive',
+        { ...jsonBody('POST', {
+          workspace_id: workspaceId,
+          extraction_id: extraction.id,
+          resume_after_user_action: resumeAfterUserAction,
+        }), timeoutMs: 15000 },
+      )
+      if (response.extraction) {
+        setXhsExtractions(current => ({
+          ...current,
+          [response.extraction.url]: response.extraction,
+          [extraction.url]: response.extraction,
+        }))
+      }
+      notify(response.job.progress?.message || (response.job.status === 'PAUSED' ? '请先在采集浏览器中完成登录或安全验证' : '已开始保存原图与正文'))
+    } catch (error) {
+      notify((error as Error).message, 'error')
+    } finally {
+      setArchivingId('')
+    }
+  }
+
+  const archiveXhsUrl = async (url: string, title: string, searchKeyword: string) => {
+    setArchivingId(url)
+    try {
+      const response = await api<{ extraction: XiaohongshuExtraction; job: { status: string; progress?: { message?: string } } }>(
+        '/api/topic-radar/xhs/archive',
+        { ...jsonBody('POST', {
+          workspace_id: workspaceId,
+          url,
+          title_hint: title,
+          search_keyword: searchKeyword,
+        }), timeoutMs: 15000 },
+      )
+      if (response.extraction) {
+        setXhsExtractions(current => ({
+          ...current,
+          [response.extraction.url]: response.extraction,
+          [url]: response.extraction,
+        }))
+      }
+      notify(response.job.progress?.message || '已开始保存原图与正文')
+    } catch (error) {
+      notify((error as Error).message, 'error')
+    } finally {
+      setArchivingId('')
     }
   }
 
@@ -1530,7 +1611,7 @@ function RadarPage({ workspaceId, onCreateFromTopic, onTaskCreated, notify }: {
               const count = Number(summary?.count || 0)
               return <div className={count > 0 ? 'ready' : ''} key={platform}><span className={`platform-dot ${platform === 'douyin' ? 'dy' : 'xhs'}`}>{platform === 'douyin' ? '抖' : '小'}</span><div><strong>{platform === 'douyin' ? '抖音' : '小红书'} {count} 条</strong><small>{summary?.source_mode === 'cached_visible_browser' ? '实时验证未完成，先显示上次保存的热门内容' : count > 0 ? '已按相关性和可见互动数排序' : summary?.message || '等待读取平台内容'}</small></div></div>
             })}</div>
-            <div className="radar-batch-extract"><span>{hasAutomaticExtraction ? <LoaderCircle className="spin" /> : <CheckCircle2 />}{hasAutomaticExtraction ? '正在自动提取小红书完整文案' : '小红书原帖会自动提取'}</span><small>无需点击；每轮搜索后会自动读取前 6 篇原文、图片文字和可见字幕。</small></div>
+            <div className="radar-batch-extract"><span>{hasAutomaticExtraction ? <LoaderCircle className="spin" /> : <CheckCircle2 />}{hasAutomaticExtraction ? '正在处理小红书页面或归档任务' : '小红书原帖已准备好归档入口'}</span><small>“保存原图与正文”会直接进入严格归档，不需要等待旧的 OCR 提取完成。</small></div>
             {dailyRecommendations.length > 0 ? <div className="radar-recommendations">{dailyRecommendations.slice(0, 12).map((item, index) => {
               const title = recommendationTitle(item)
               const platformLinks = recommendationPlatformSearchLinks(item)
@@ -1545,12 +1626,13 @@ function RadarPage({ workspaceId, onCreateFromTopic, onTaskCreated, notify }: {
                 {pillar && <small className="radar-recommendation-pillar"><b>IP 方向</b>{pillar}</small>}
                 <p><b>创作判断</b>{recommendationReason(item) || '结合真实内容与评论，把这个话题改写成贴近受众的内容。'}</p>
                 {originalPost && <a className="radar-original-post" href={originalPost.url} target="_blank" rel="noreferrer"><span className={`platform-dot ${originalPost.platform === 'douyin' ? 'dy' : 'xhs'}`}>{originalPost.platform === 'douyin' ? '抖' : '小'}</span><span><b>{originalPost.label}</b><small>{[radarMetricText(typeof item === 'string' ? undefined : item.visible_metrics), '查看真实原帖'].filter(Boolean).join(' · ')}</small></span><ExternalLink /></a>}
+                {originalPost?.platform === 'xiaohongshu' && !extraction && <button className="xhs-extract-button" onClick={() => archiveXhsUrl(originalPost.url, title, searchQuery)} disabled={archivingId === originalPost.url}>{archivingId === originalPost.url ? <LoaderCircle className="spin" /> : <Save />}{archivingId === originalPost.url ? '正在建立归档任务' : '保存原图与正文'}</button>}
                 {originalPost?.platform === 'xiaohongshu' && xhsNeedsRetry(extraction) && <button className="xhs-extract-button" onClick={() => extractXhsPost(originalPost.url, title, searchQuery, false, true)} disabled={extractingUrl === originalPost.url}>{extractingUrl === originalPost.url ? <LoaderCircle className="spin" /> : <RefreshCw />}{extractingUrl === originalPost.url ? '正在重试' : xhsRetryLabel(extraction)}</button>}
-                <XhsExtractionPanel extraction={extraction} />
+                <XhsExtractionPanel extraction={extraction} onArchive={extraction ? resume => archiveXhsPost(extraction, resume) : undefined} archiving={archivingId === extraction?.id} />
                 <footer><button onClick={() => onCreateFromTopic({ topic: title || dailyMonitor?.query || '今天的 IP 热点', sourceUrls: recommendationSourceUrls(item, platformLinks), searchQuery, platformSearches: platformLinks })}><WandSparkles />用这个方向创作</button></footer>
               </article>
             })}</div> : <div className="radar-path-empty"><Search /><div><strong>还没有足够的平台内容</strong><p>先打开双平台浏览器并扫码登录，再点击“现在帮我找热点”。</p></div></div>}
-            {dailyRun.items.length > 0 && <details className="radar-visible-sources"><summary>查看本轮实际看到的 {dailyRun.items.length} 条内容 <ChevronDown /></summary><div className="radar-item-grid">{dailyRun.items.slice(0, 12).map(item => <RadarItemCard key={item.id} item={item} extraction={xhsExtractions[item.url]} extracting={extractingUrl === item.url} onExtract={(url, title) => extractXhsPost(url, title, dailyMonitor?.query || title, false, Boolean(xhsExtractions[item.url]))} />)}</div></details>}
+            {dailyRun.items.length > 0 && <details className="radar-visible-sources"><summary>查看本轮实际看到的 {dailyRun.items.length} 条内容 <ChevronDown /></summary><div className="radar-item-grid">{dailyRun.items.slice(0, 12).map(item => <RadarItemCard key={item.id} item={item} extraction={xhsExtractions[item.url]} extracting={extractingUrl === item.url} archiving={archivingId === xhsExtractions[item.url]?.id || archivingId === item.url} onExtract={(url, title) => extractXhsPost(url, title, dailyMonitor?.query || title, false, Boolean(xhsExtractions[item.url]))} onArchive={(extraction, resume) => archiveXhsPost(extraction, resume)} onArchiveUrl={(url, title) => archiveXhsUrl(url, title, dailyMonitor?.query || title)} />)}</div></details>}
           </div> : <div className="radar-path-empty"><Sparkles /><div><strong>先让它认识你的内容方向</strong><p>开启后会每天自动观察；不需要你每天想一个新的搜索词。</p></div></div>}
         </section>
 
@@ -1567,7 +1649,7 @@ function RadarPage({ workspaceId, onCreateFromTopic, onTaskCreated, notify }: {
             </div>
             <div className="radar-topic-actions"><button className="secondary-button" onClick={searchTopic} disabled={searchingTopic || creatingFromTopic}>{searchingTopic ? <LoaderCircle className="spin" /> : <Search />}{searchingTopic ? '正在搜索' : '先搜主题'}</button><button className="primary-button" onClick={createFromTopicSearch} disabled={searchingTopic || creatingFromTopic}>{creatingFromTopic ? <LoaderCircle className="spin" /> : <WandSparkles />}{creatingFromTopic ? '正在开始创作' : '搜索后开始创作'}</button></div>
           </div>
-          <div className="radar-full-copy-guide"><FileText /><div><strong>小红书完整文案会自动出现</strong><p>搜索完成后，系统会直接提取正文、图片文字和可见字幕，不需要再点“提取文案”。</p></div></div>
+          <div className="radar-full-copy-guide"><FileText /><div><strong>先读取页面，再保存原图与正文</strong><p>只有帖子 ID、原始正文、全部图片字节和校验清单都通过时，才会显示“完整归档”。</p></div></div>
           {topicResult && <div className="radar-topic-result">
             <div className="radar-daily-result-heading"><div><strong>“{topicResult.topic || topicQuery}” 的可讲方向</strong><small>{topicResult.visible_source_count ? `实际读取 ${topicResult.visible_source_count} 条平台内容` : topicSources.length ? `已用 ${topicSources.length} 条平台索引辅助判断` : '等待平台内容'}</small></div><span>{topicAngles.length} 个主题</span></div>
             {topicAngles.length > 0 ? <div className="topic-angle-list">{topicAngles.slice(0, 12).map((angle, index) => {
@@ -1584,8 +1666,9 @@ function RadarPage({ workspaceId, onCreateFromTopic, onTaskCreated, notify }: {
                 <small className="radar-summary-label">搜索页摘要</small>
                 <p>{source.excerpt}</p>
                 <footer><small>{[source.metadata?.author, radarMetricText(source.metadata?.metrics)].filter(Boolean).join(' · ')}</small><a href={source.url} target="_blank" rel="noreferrer">打开原文 <ExternalLink /></a></footer>
+                {isXhs && !extraction && <button className="xhs-extract-button" onClick={() => archiveXhsUrl(source.url, source.title, topicResult.topic || topicQuery)} disabled={archivingId === source.url}>{archivingId === source.url ? <LoaderCircle className="spin" /> : <Save />}{archivingId === source.url ? '正在建立归档任务' : '保存原图与正文'}</button>}
                 {isXhs && xhsNeedsRetry(extraction) && <button className="xhs-extract-button" onClick={() => extractXhsPost(source.url, source.title, topicResult.topic || topicQuery, false, true)} disabled={extractingUrl === source.url}>{extractingUrl === source.url ? <LoaderCircle className="spin" /> : <RefreshCw />}{extractingUrl === source.url ? '正在重试' : xhsRetryLabel(extraction)}</button>}
-                <XhsExtractionPanel extraction={extraction} />
+                <XhsExtractionPanel extraction={extraction} onArchive={extraction ? resume => archiveXhsPost(extraction, resume) : undefined} archiving={archivingId === extraction?.id} />
               </article>
             })}</div></details>}
           </div>}
@@ -1593,11 +1676,11 @@ function RadarPage({ workspaceId, onCreateFromTopic, onTaskCreated, notify }: {
       </div>
 
       {savedXhsExtractions.length > 0 && <details className="xhs-extraction-library xhs-extraction-library-wide">
-        <summary><span>已提取原文库（{savedXhsExtractions.length}）</span><small>需要时再展开查看</small><ChevronDown /></summary>
+        <summary><span>小红书页面与归档库（{savedXhsExtractions.length}）</span><small>完整、部分和失败状态分别显示</small><ChevronDown /></summary>
         <div>{savedXhsExtractions.slice(0, 12).map(extraction => <article key={extraction.id}>
           <header><div><span className="platform-dot xhs">小</span><strong>{extraction.title || '小红书原帖'}</strong></div><a href={extraction.url} target="_blank" rel="noreferrer">平台原帖 <ExternalLink /></a></header>
           {xhsNeedsRetry(extraction) && <button className="xhs-extract-button" onClick={() => extractXhsPost(extraction.url, extraction.title, extraction.search_keyword, false, true)} disabled={extractingUrl === extraction.url}>{extractingUrl === extraction.url ? <LoaderCircle className="spin" /> : <RefreshCw />}重新尝试</button>}
-          <XhsExtractionPanel extraction={extraction} />
+          <XhsExtractionPanel extraction={extraction} onArchive={resume => archiveXhsPost(extraction, resume)} archiving={archivingId === extraction.id} />
         </article>)}</div>
       </details>}
 
@@ -1605,11 +1688,14 @@ function RadarPage({ workspaceId, onCreateFromTopic, onTaskCreated, notify }: {
   )
 }
 
-function RadarItemCard({ item, extraction, extracting, onExtract }: {
+function RadarItemCard({ item, extraction, extracting, archiving, onExtract, onArchive, onArchiveUrl }: {
   item: TopicRadarItem
   extraction?: XiaohongshuExtraction
   extracting: boolean
+  archiving: boolean
   onExtract: (url: string, title: string) => void
+  onArchive: (extraction: XiaohongshuExtraction, resumeAfterUserAction?: boolean) => void
+  onArchiveUrl: (url: string, title: string) => void
 }) {
   const metricEntries = Object.entries(item.metrics || {}).filter(([, value]) => value !== null && value !== undefined && value !== '')
   const publicWeb = item.platform === 'web'
@@ -1621,8 +1707,9 @@ function RadarItemCard({ item, extraction, extracting, onExtract }: {
     <h3>{item.title}</h3>
     {item.excerpt && <><small className="radar-summary-label">搜索页摘要</small><p>{item.excerpt}</p></>}
     <footer><span>{item.author || '平台内容'}{item.published_at ? ` · ${formatDate(item.published_at)}` : ''}</span>{metricEntries.length > 0 && <small>{metricEntries.slice(0, 3).map(([key, value]) => `${key === 'likes' ? '赞' : key === 'comments' ? '评' : key === 'shares' ? '转' : key === 'plays' ? '播' : key === 'visible_engagement' ? '可见热度' : key}${value}`).join(' · ')}</small>}{item.url && <a href={item.url} target="_blank" rel="noreferrer" aria-label="打开内容"><ExternalLink /></a>}</footer>
+    {item.platform === 'xiaohongshu' && item.url && !extraction && <button className="xhs-extract-button" onClick={() => onArchiveUrl(item.url, item.title)} disabled={archiving}>{archiving ? <LoaderCircle className="spin" /> : <Save />}{archiving ? '正在建立归档任务' : '保存原图与正文'}</button>}
     {item.platform === 'xiaohongshu' && item.url && xhsNeedsRetry(extraction) && <button className="xhs-extract-button" onClick={() => onExtract(item.url, item.title)} disabled={extracting}>{extracting ? <LoaderCircle className="spin" /> : <RefreshCw />}{extracting ? '正在重试' : xhsRetryLabel(extraction)}</button>}
-    <XhsExtractionPanel extraction={extraction} />
+    <XhsExtractionPanel extraction={extraction} onArchive={extraction ? resume => onArchive(extraction, resume) : undefined} archiving={archiving} />
   </article>
 }
 

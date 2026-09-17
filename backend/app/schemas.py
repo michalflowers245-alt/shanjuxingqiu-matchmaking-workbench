@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from typing import Any, Literal
 
-from pydantic import BaseModel, Field, HttpUrl, field_validator
+from pydantic import BaseModel, Field, HttpUrl, field_validator, model_validator
 
 
 ContentType = Literal[
@@ -238,6 +238,21 @@ class XiaohongshuExtractionRequest(BaseModel):
     search_keyword: str = Field(default="", max_length=180)
     title_hint: str = Field(default="", max_length=500)
     force: bool = False
+
+
+class XiaohongshuArchiveRequest(BaseModel):
+    workspace_id: str
+    extraction_id: str | None = None
+    url: HttpUrl | None = None
+    search_keyword: str = Field(default="", max_length=180)
+    title_hint: str = Field(default="", max_length=500)
+    resume_after_user_action: bool = False
+
+    @model_validator(mode="after")
+    def require_archive_source(self):
+        if not self.extraction_id and not self.url:
+            raise ValueError("需要提供小红书记录或原帖链接")
+        return self
 
 
 class TopicDiscoveryCreate(BaseModel):

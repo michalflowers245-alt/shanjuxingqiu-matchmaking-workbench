@@ -100,6 +100,65 @@ export type XiaohongshuExtraction = {
   retry_count: number
   extracted_at: string
   updated_at: string
+  body_raw?: string | null
+  body_normalized?: string | null
+  body_source?: string
+  body_evidence?: Record<string, unknown>
+  archive_status?: string
+  verification_status?: string
+  content_sha256?: string | null
+  latest_archive_id?: string | null
+  expected_asset_count?: number | null
+  saved_asset_count?: number
+  archive?: XiaohongshuArchive | null
+  archive_job?: XiaohongshuArchiveJob | null
+}
+
+export type XiaohongshuArchiveAsset = {
+  id: string
+  role: 'carousel' | 'cover' | string
+  ordinal: number
+  mime_detected?: string | null
+  extension?: string | null
+  width?: number | null
+  height?: number | null
+  byte_size?: number | null
+  sha256?: string | null
+  status: string
+  error_code?: string | null
+  download_url?: string
+}
+
+export type XiaohongshuArchive = {
+  id: string
+  extraction_id: string
+  post_id: string
+  observed_post_id: string
+  body_raw?: string | null
+  body_normalized?: string | null
+  body_source: string
+  archive_status: string
+  verification_status: string
+  content_sha256?: string | null
+  manifest_sha256?: string | null
+  captured_at: string
+  assets: XiaohongshuArchiveAsset[]
+}
+
+export type XiaohongshuArchiveJob = {
+  id: string
+  extraction_id: string
+  status: string
+  stage: string
+  error_code?: string | null
+  progress: {
+    message?: string
+    archive_id?: string
+    expected_asset_count?: number | null
+    saved_asset_count?: number
+    missing_ordinals?: number[]
+  }
+  updated_at: string
 }
 
 export type DraftPackage = {
